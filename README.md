@@ -118,4 +118,9 @@ It might be helpful to visualize the current selected segment of reference path 
 - **Deliverable 1**: Commit your mpc package to GitHub. Your commited code should run smoothly in simulation.
 - **Deliverable 2**: Submit a link to a video on YouTube showing the car tracking waypoints with MPC in Levine hallway in simulation. 
 
+## VIII: Grading Rubric
+- Compilation: **10** Points
+- Correct objectives and constraints: **50** Points
+- Working path tracker: **20** Points
+- Video: **20** Points
 
