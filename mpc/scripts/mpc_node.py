@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+##!/usr/bin/env python3
 import math
 from dataclasses import dataclass, field
 
@@ -75,18 +75,23 @@ class MPC(Node):
         #       use the MPC as a tracker (similar to pure pursuit)
         # TODO: get waypoints here
 
-        self.is_real = False
+        self.is_real = True# False
         self.waypoints = np.loadtxt("wp_20240724_123122.csv", delimiter=",", skiprows=1)
         self.waypoints = np.delete(self.waypoints, 0, axis=0)
         #self.waypoints[:, 4] += math.pi / 2
         print("Waypoints loaded: ", self.waypoints)
+
+        self.initial_x = None
+        self.initial_y = None
+        self.load_initial_pose()
       
 
         drive_topic = '/drive'
         odom_topic = '/pf/viz/inferred_pose' if self.is_real else '/ego_racecar/odom'
         ref_path_tracker = '/ref_path_tracker'
-        self.pose_sub = self.create_subscription(PoseWithCovarianceStamped, self.get_parameter('/gnss_to_local/local_position').get_parameter_value().string_value, self.pose_cb, 10)
-        self.sub_pose = self.create_subscription(PoseStamped if self.is_real else Odometry, odom_topic, self.pose_callback, 1)
+        #self.pose_sub = self.create_subscription(PoseWithCovarianceStamped, self.get_parameter('/gnss_to_local/local_position').get_parameter_value().string_value, self.pose_cb, 10)
+        #self.sub_pose = self.create_subscription(PoseStamped if self.is_real else Odometry, odom_topic, self.pose_callback, 1)
+        self.sub_pose = self.create_subscription(PoseStamped if self.is_real else PoseWithCovarianceStamped, self.get_parameter('/gnss_to_local/local_position').get_parameter_value().string_value, self.pose_cb, 10)
         self.pub_drive = self.create_publisher(AckermannDriveStamped, drive_topic, 1)
         self.drive_msg = AckermannDriveStamped()
         self.ref_path_vis = self.create_publisher(Marker, ref_path_tracker, 1)
@@ -107,9 +112,19 @@ class MPC(Node):
         # initialize MPC problem
         self.mpc_prob_init()
 
+    def load_initial_pose(self):
+        wp = np.loadtxt("wp_20240724_123122.csv", delimiter=",", skiprows=0, max_rows=1)
+        self.initial_x = wp[0]
+        self.initial_y = wp[1]
+        print(f"Initial pose: {self.initial_x}, {self.initial_y}")
+
     def pose_callback(self, pose_msg):
-        pass
+        #pass
         # TODO: extract pose from ROS msg
+
+        if self.initial_x is None or self.initial_y is None:
+            return
+
         vehicle_state = self.get_vehicle_state(pose_msg)
 
         # TODO: Calculate the next reference trajectory for the next T steps
@@ -188,8 +203,13 @@ class MPC(Node):
     # Get the current vehicle state
     def get_vehicle_state(self, pose_msg):
         vehicle_state = State()
-        vehicle_state.x = pose_msg.pose.position.x if self.is_real else pose_msg.pose.pose.position.x
-        vehicle_state.y = pose_msg.pose.position.y if self.is_real else pose_msg.pose.pose.position.y
+
+
+        current_pose = pose_msg.pose.pose if not self.is_real else pose_msg.pose
+        
+
+        vehicle_state.x = (current_pose.position.x - self.initial_x) if self.is_real else pose_msg.pose.pose.position.x
+        vehicle_state.y = (current_pose.position.y - self.initial_y) if self.is_real else pose_msg.pose.pose.position.y
         vehicle_state.v = self.drive_msg.drive.speed
         quat_msg = pose_msg.pose.orientation if self.is_real else pose_msg.pose.pose.orientation
         quat = [quat_msg.x, quat_msg.y, quat_msg.z, quat_msg.w]
