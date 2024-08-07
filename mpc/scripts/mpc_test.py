@@ -8,23 +8,20 @@ import cvxpy
 import numpy as np
 import rclpy
 from ackermann_msgs.msg import AckermannDrive, AckermannDriveStamped
-from geometry_msgs.msg import PoseStamped, Point
+from geometry_msgs.msg import PoseStamped, Point, PoseWithCovarianceStamped
 from rclpy.node import Node
 from scipy.linalg import block_diag
 from scipy.sparse import block_diag, csc_matrix, diags
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from utils import nearest_point
-from visualization_msgs.msg import Marker, MarkerArray
-
-# TODO CHECK: include needed ROS msg type headers and libraries
 
 
 @dataclass
 class mpc_config:
     NXK: int = 4  # length of kinematic state vector: z = [x, y, v, yaw]
     NU: int = 2  # length of input vector: u = [steering speed, acceleration]
-    TK: int = 5  # finite time horizon length - kinematic
+    TK: int = 8  # finite time horizon length - kinematic
 
     # ---------------------------------------------------
     # TODO: you may need to tune the following matrices
@@ -46,19 +43,36 @@ class mpc_config:
     )  # final state error matrix, penalty  for the final state constraints: [x, y, delta, v, yaw, yaw-rate, beta]
     # ---------------------------------------------------
 
+    # 1:10 PARAMETERS
     N_IND_SEARCH: int = 20  # Search index number
     DTK: float = 0.1  # time step [s] kinematic
     dlk: float = 0.2  # dist step [m] kinematic
-    LENGTH: float = 0.58  # Length of the vehicle [m]
-    WIDTH: float = 0.31  # Width of the vehicle [m]
+    LENGTH: float = 0.58 #0.9  # Length of the vehicle [m]
+    WIDTH: float = 0.31#0.54  # Width of the vehicle [m]
     WB: float = 0.33  # Wheelbase [m]
-    MIN_STEER: float = -0.4189  # maximum steering angle [rad]
-    MAX_STEER: float = 0.4189  # maximum steering angle [rad]
+    MIN_STEER: float = -0.8189  # maximum steering angle [rad]
+    MAX_STEER: float = 0.8189  # maximum steering angle [rad]
     MAX_DSTEER: float = np.deg2rad(180.0)  # maximum steering speed [rad/s]
     MAX_STEER_V: float = 3.2  # maximum steering speed [rad/s]
-    MAX_SPEED: float = 5.0  # maximum speed [m/s] ~ 5.0 for levine sim
+    MAX_SPEED: float = 6.0  # maximum speed [m/s] ~ 5.0 for levine sim
     MIN_SPEED: float = 0.0  # minimum backward speed [m/s]
-    MAX_ACCEL: float = 3.0  # maximum acceleration [m/ss]
+    MAX_ACCEL: float = 3.0  # maximum acceleration [m/ss] 
+
+    """ # 1:5 PARAMETERS
+    N_IND_SEARCH: int = 20
+    DTK: float = 0.1
+    dlk: float = 0.2
+    LENGTH: float = 0.9
+    WIDTH: float = 0.54
+    WB: float = 0.53
+    MIN_STEER: float = -0.4189
+    MAX_STEER: float = 0.4189
+    MAX_DSTEER: float = np.deg2rad(180.0)
+    MAX_STEER_V: float = 3.2
+    MAX_SPEED: float = 4.0
+    MIN_SPEED: float = 0.0
+    MAX_ACCEL: float = 3.0
+ """
 
 
 @dataclass
@@ -78,67 +92,62 @@ class MPC(Node):
     """
     def __init__(self):
         super().__init__('mpc_node')
-        # TODO: create ROS subscribers and publishers
-        #       use the MPC as a tracker (similar to pure pursuit)
-        self.is_real = False
+        
+        self.real_car = False
 
-        # TODO: get waypoints here
+        self.map_name = 'traj_race_cl(2)'# x, y, z, v, yaw
+        self.waypoints = np.loadtxt(self.map_name + '.csv', delimiter=';', skiprows=1) 
+        """ print('waypoints: ', self.waypoints) """
         
-        self.map_name = 'traj_race_cl(2)'
-        
-        self.waypoints = np.loadtxt(self.map_name + '.csv', delimiter=';', skiprows=0) 
-        """ map_path = os.path.abspath(os.path.join('src', 'csv_data'))
-     
-        self.waypoints = np.loadtxt(map_path + '/' + self.map_name + '.csv', delimiter=';', skiprows=0)  # csv data """
-        print('waypoints: ', self.waypoints)
-        
-        self.waypoints[:, 3] += math.pi / 2 
+        self.waypoints[:, 4] += math.pi/2 
 
         drive_topic = '/drive'
-        odom_topic = '/pf/viz/inferred_pose' if self.is_real else '/ego_racecar/odom'
+        if self.real_car:
+            odom_topic = '/pf/viz/inferred_pose'
+        else:
+            odom_topic = '/ego_racecar/odom'
+
         ref_path_tracker = '/ref_path_tracker'
-        # Pose subscriber
-        self.sub_pose = self.create_subscription(PoseStamped if self.is_real else Odometry, odom_topic, self.pose_callback, 1)
-        # Drive publisher
+
+        if self.real_car:
+            self.sub_pose = self.create_subscription(PoseWithCovarianceStamped, '/gnss_to_local/local_position', self.pose_callback, 10)
+        else:
+            self.sub_pose = self.create_subscription(Odometry, odom_topic, self.pose_callback, 10)
+
+
+
+        #self.sub_pose = self.create_subscription(PoseStamped if self.is_real else Odometry, odom_topic, self.pose_callback, 1)
+
         self.pub_drive = self.create_publisher(AckermannDriveStamped, drive_topic, 1)
-        self.drive_msg = AckermannDriveStamped()
-        # Visualization of reference path publisher
-        self.ref_path_vis = self.create_publisher(Marker, ref_path_tracker, 1)
-        self.ref_path_msg = Marker()
-
-        # Visulization of waypoints
-        self.waypoints_vis = self.create_publisher(Marker, '/waypoints', 1)
-        self.waypoints_msg = Marker()
-        self.visualize_waypoints()
-        
-        # Visualization of the predicted vehicle motion
-        self.pred_motion_vis = self.create_publisher(Marker, '/predicted_motion', 1)
-        self.pred_motion_msg = Marker()
-
+        self.drive_msg = AckermannDriveStamped()        
         self.config = mpc_config()
         self.odelta_v = None
         self.odelta = None
         self.oa = None
         self.init_flag = 0
 
-        # initialize MPC problem
+        self.initial_x = None
+        self.initial_y = None
+        self.initial_yaw = None
+        if self.real_car:
+            self.load_initial_pose()
         self.mpc_prob_init()
-        self.rot_mat = np.identity(3)
+
+    def load_initial_pose(self):
+        wp = np.loadtxt(self.map_name + '.csv', delimiter=";", skiprows=0, max_rows=1)
+        self.initial_x = wp[0]
+        self.initial_y = wp[1]
+        """ print(f"Initial pose: {self.initial_x}, {self.initial_y}") """
 
     def pose_callback(self, pose_msg):
-        # TODO: extract pose from ROS msg
+
         vehicle_state = self.get_vehicle_state(pose_msg)
-
-
-        # TODO: Calculate the next reference trajectory for the next T steps
-        #       with current vehicle pose.
-        #       ref_x, ref_y, ref_yaw, ref_v are columns of self.waypoints
+        # s_m; x_m; y_m; psi_rad; kappa_radpm; vx_mps; ax_mps2
+        #ref_x, ref_y, ref_yaw, ref_v are columns of self.waypoints
         ref_path = self.calc_ref_trajectory(vehicle_state, self.waypoints[:,1], self.waypoints[:,2], self.waypoints[:,3], self.waypoints[:,5])
-        # print('x0: ', x0)
-        self.visualize_ref_path(ref_path)
+        """ print(f"Ref path: {ref_path}") """
         x0 = [vehicle_state.x, vehicle_state.y, vehicle_state.v, vehicle_state.yaw]
-        
-        # TODO: solve the MPC control problem
+        """ print(f"x0: {x0}") """
         (
             self.oa,
             self.odelta_v,
@@ -149,70 +158,39 @@ class MPC(Node):
             state_predict,
         ) = self.linear_mpc_control(ref_path, x0, self.oa, self.odelta_v)
 
-        # TODO: publish drive message.
         steer_output = self.odelta_v[0]
         speed_output = vehicle_state.v + self.oa[0] * self.config.DTK
-        
+        if speed_output < 0.0:
+            speed_output = 0.5
         self.drive_msg.drive.steering_angle = steer_output
         self.drive_msg.drive.speed = speed_output
-        # print(f"Steering: {steer_output}, Speed: {speed_output}")
+        print(f"Steering: {steer_output}, Speed: {speed_output}")
         self.pub_drive.publish(self.drive_msg)
 
-    # Visualization of the reference path
-    def visualize_ref_path(self, ref_path):
-        self.ref_path_msg.points = []
-        self.ref_path_msg.header.frame_id = '/map'
-        self.ref_path_msg.type = Marker.LINE_STRIP
-        self.ref_path_msg.color.b = 0.75
-        self.ref_path_msg.color.a = 1.0
-        self.ref_path_msg.scale.x = 0.08
-        self.ref_path_msg.scale.y = 0.08
-        self.ref_path_msg.id = 0
-        for i in range(ref_path.shape[1]):
-            point = Point(x = ref_path[0, i], y = ref_path[1, i], z = 0.2)
-            self.ref_path_msg.points.append(point)
-        self.ref_path_vis.publish(self.ref_path_msg)
 
-    # Visualization of the predicted vehicle motion
-    def visualize_pred_motion(self, path_predict):
-        self.pred_motion_msg.header.frame_id = "/map"
-        self.pred_motion_msg.id = 0
-        self.pred_motion_msg.type = Marker.LINE_STRIP
-        self.pred_motion_msg.scale.x = 0.05
-        self.pred_motion_msg.scale.y = 0.05
-        self.pred_motion_msg.color.a = 1.0
-        self.pred_motion_msg.color.r = 1.0
-        self.pred_motion_msg.color.g = 0.0
-        self.pred_motion_msg.color.b = 0.0
-        self.pred_motion_msg.points = []
-        for i in range(path_predict.shape[1]):
-            self.pred_motion_msg.points.append(
-                Point(x = path_predict[0, i], y = path_predict[1, i], z = 0.2)
-            )
-        self.pred_motion_vis.publish(self.pred_motion_msg)
-
-    # Visualization of the waypoints
-    def visualize_waypoints(self):
-        self.waypoints_msg.points = []
-        self.waypoints_msg.header.frame_id = '/map'
-        self.waypoints_msg.type = Marker.POINTS
-        self.waypoints_msg.color.g = 0.75
-        self.waypoints_msg.color.a = 1.0
-        self.waypoints_msg.scale.x = 0.05
-        self.waypoints_msg.scale.y = 0.05
-        self.waypoints_msg.id = 0
-        for i in range(self.waypoints.shape[0]):
-            point = Point(x = self.waypoints[i, 1], y = self.waypoints[i, 2], z = 0.1)
-            self.waypoints_msg.points.append(point)
-        self.waypoints_vis.publish(self.waypoints_msg)
-
-    # Get the current vehicle state
     def get_vehicle_state(self, pose_msg):
         vehicle_state = State()
-        vehicle_state.x = pose_msg.pose.position.x if self.is_real else pose_msg.pose.pose.position.x
-        vehicle_state.y = pose_msg.pose.position.y if self.is_real else pose_msg.pose.pose.position.y
+
+
+        if self.real_car:
+            
+            vehicle_state.x = (pose_msg.pose.pose.position.x - self.initial_x)
+            vehicle_state.y = (pose_msg.pose.pose.position.y - self.initial_y)
+            """  print(f"X: {vehicle_state.x}, Y: {vehicle_state.y}")
+            print(f"position x: {pose_msg.pose.position.x}, position y: {pose_msg.pose.position.y}")
+            quat_msg = pose_msg.pose.orientation
+            print(f"quat_msg: {quat_msg}") """
+        
+        else:
+            
+            vehicle_state.x = pose_msg.pose.pose.position.x
+            vehicle_state.y = pose_msg.pose.pose.position.y
+            quat_msg = pose_msg.pose.pose.orientation
+            """ print(f"X: {vehicle_state.x}, Y: {vehicle_state.y}")
+            print(f"position x: {vehicle_state.x}, position y: {vehicle_state.y}")
+            print(f"quat_msg: {quat_msg}") """
+
         vehicle_state.v = self.drive_msg.drive.speed
-        quat_msg = pose_msg.pose.orientation if self.is_real else pose_msg.pose.pose.orientation
         quat = [quat_msg.x, quat_msg.y, quat_msg.z, quat_msg.w]
         # Calculate the yaw angle from the quaternion
         vehicle_state.yaw = math.atan2(2 * (quat[3] * quat[2] + quat[0] * quat[1]), 1 - 2 * (quat[1] ** 2 + quat[2] ** 2))
@@ -346,6 +324,7 @@ class MPC(Node):
 
         # State constraints
         constraint4 = cvxpy.abs(self.xk[2, :]) <= self.config.MAX_SPEED
+        
 
         # Input constraints
         constraint5 = cvxpy.abs(self.uk[0, :]) <= self.config.MAX_ACCEL
@@ -388,7 +367,6 @@ class MPC(Node):
         # based on current velocity, distance traveled on the ref line between time steps
         travel = abs(state.v) * self.config.DTK
         dind = travel / self.config.dlk
-        print('dind: ', dind)
         dind = 2
         ind_list = int(ind) + np.insert(
             np.cumsum(np.repeat(dind, self.config.TK)), 0, 0
@@ -555,7 +533,7 @@ class MPC(Node):
         # Call the Motion Prediction function: Predict the vehicle motion for x-steps
         path_predict = self.predict_motion(x0, oa, od, ref_path)
         poa, pod = oa[:], od[:]
-        self.visualize_pred_motion(path_predict)
+
 
         # Run the MPC optimization: Create and solve the optimization problem
         mpc_a, mpc_delta, mpc_x, mpc_y, mpc_yaw, mpc_v = self.mpc_prob_solve(
@@ -575,8 +553,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-
-
-
-# if __name__ == '__main__':
-#     main()
