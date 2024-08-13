@@ -71,7 +71,6 @@ class MPC(Node):
         self.config_path = "/home/nvidia/pure_pursuit_results"
         self.csv = "traj_race_cl(2).csv"
         self.map_name = os.path.join(self.config_path, self.csv)
-        # x, y, z, v, yaw
         self.waypoints = np.loadtxt(self.map_name, delimiter=';', skiprows=1)
         self.waypoints[:, 3] += math.pi/2
 
@@ -85,6 +84,8 @@ class MPC(Node):
             self.sub_pose = self.create_subscription(PoseWithCovarianceStamped, '/gnss_to_local/local_position', self.pose_callback, 10)
         else:
             self.sub_pose = self.create_subscription(Odometry, odom_topic, self.pose_callback, 10)
+        
+        
 
         self.pub_drive = self.create_publisher(AckermannDriveStamped, drive_topic, 1)
         self.drive_msg = AckermannDriveStamped()
@@ -97,6 +98,15 @@ class MPC(Node):
         self.initial_x = None
         self.initial_y = None
         self.initial_yaw = None
+        if self.real_car:
+            # Take the avarage of the first 10 poses to get the initial pose  
+            initial_pose =  np.zeros((10, 3))
+            for i in range(10):
+                initial_pose[i,0] = self.sub_pose.pose.pose.position.x
+                initial_pose[i,1] = self.sub_pose.pose.pose.position.y
+            self.initial_x = np.mean(initial_pose[:, 0])
+            self.initial_y = np.mean(initial_pose[:, 1])
+            print(f"Initial pose: {self.initial_x}, {self.initial_y}")
         """ if self.real_car:
             self.load_initial_pose() """
         self.mpc_prob_init()
@@ -167,8 +177,8 @@ class MPC(Node):
         vehicle_state = State()
 
         if self.real_car:
-            vehicle_state.x = (pose_msg.pose.pose.position.x)# - self.initial_x)
-            vehicle_state.y = (pose_msg.pose.pose.position.y)# - self.initial_y)
+            vehicle_state.x = (pose_msg.pose.pose.position.x - self.initial_x)
+            vehicle_state.y = (pose_msg.pose.pose.position.y - self.initial_y)
             quat_msg = pose_msg.pose.pose.orientation
         else:
             vehicle_state.x = pose_msg.pose.pose.position.x

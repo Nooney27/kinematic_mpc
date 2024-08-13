@@ -114,7 +114,6 @@ class MPC(Node):
         # Visualization of the predicted vehicle motion
         self.pred_motion_vis = self.create_publisher(Marker, '/predicted_motion', 1)
         self.pred_motion_msg = Marker()
-
         self.config = mpc_config()
         self.odelta_v = None
         self.odelta = None
@@ -343,7 +342,6 @@ class MPC(Node):
         #       self.xk, self.x0k, self.config.MAX_SPEED, self.config.MIN_SPEED,
         #       self.uk, self.config.MAX_ACCEL, self.config.MAX_STEER
         constraint3 = self.x0k == self.xk[:, 0]
-
         # State constraints
         constraint4 = cvxpy.abs(self.xk[2, :]) <= self.config.MAX_SPEED
 
@@ -409,7 +407,6 @@ class MPC(Node):
         ref_traj[3, :] = cyaw[ind_list]
 
         return ref_traj
-
 
     def predict_motion(self, x0, oa, od, xref):
         path_predict = xref * 0.0
