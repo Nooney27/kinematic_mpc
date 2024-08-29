@@ -36,7 +36,8 @@ class MPC(Node):
         
         self.real_car = False
 
-        self.map_name = 'traj_race_cl(2)'  # Ensure this path is correct
+        #self.map_name = 'traj_race_cl(2)'  # Ensure this path is correct
+        self.map_name = "interpolated_trajectory"
         self.waypoints = np.loadtxt(self.map_name + '.csv', delimiter=';', skiprows=1) 
         print('waypoints: ', self.waypoints)
         

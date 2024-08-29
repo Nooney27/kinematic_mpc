@@ -99,7 +99,7 @@ class MPC(Node):
         self.waypoints = np.loadtxt(self.map_name + '.csv', delimiter=';', skiprows=1) 
         """ print('waypoints: ', self.waypoints) """
         
-        self.waypoints[:, 4] += math.pi/2 
+        self.waypoints[:, 3] += math.pi/2 
 
         drive_topic = '/drive'
         if self.real_car:
